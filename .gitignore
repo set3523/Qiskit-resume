@@ -1,2 +1,13 @@
-README_ko.md
-temp.md
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+*.qresume
+*.qresume-journal
+*.qresume-wal
+*.qresume-shm
+*.qresume.lock
