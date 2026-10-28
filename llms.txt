@@ -1,0 +1,121 @@
+# qiskit-resume
+
+> Record & replay layer for Qiskit Primitives scripts. Wrap the Estimators/Samplers, run the script inside
+> `with resume.resume_run("x.qresume"):`, and after any interruption run the same script again: finished
+> calls replay from the file, an IBM job that was still running is reconnected (not resubmitted), only new
+> work uses the QPU. Works for any algorithm because it records primitive calls, not algorithm state.
+
+Install: `pip install qiskit-resume` (add `[ibm]` for IBM hardware). Python >= 3.10, Qiskit >= 1.4.
+
+## How to apply it to an existing Qiskit script
+
+Make these changes and nothing else (removing imports that become unused is fine):
+
+1. `import qiskit_resume as resume`, and move the code after the imports into
+   `with resume.resume_run("<experiment-name>.qresume"):` (simplest and always correct).
+   Strictly required inside the block: every primitive call, and `resume.rng`, `resume.seed_for`,
+   `resume.backend`. Imports, function definitions, plain setup (Hamiltonians, circuits) and creating
+   wrapped objects may stay outside.
+   The path is relative to the working directory; the run leaves `<name>.qresume` (the record) and
+   `<name>.qresume.lock` (harmless, may stay; it prevents two processes writing one experiment). To start an experiment from scratch, use a new file name
+   or delete the old file.
+2. Wrap every Estimator and Sampler: `estimator = resume.wrap(EstimatorV2(mode=backend))`.
+   Applies to `qiskit_ibm_runtime` EstimatorV2/SamplerV2 and the newer Estimator/Sampler, and to local
+   StatevectorEstimator/StatevectorSampler. Pass the wrapped objects into library algorithms
+   (qiskit_algorithms VQE, QAOA, VQD, ComputeUncompute, ...); they pass isinstance checks.
+3. Replace `generate_preset_pass_manager(...)` with `resume.pass_manager(backend, ...)` (same keyword
+   arguments; keep an existing `seed_transpiler=`, otherwise a fixed one is chosen for you). Without a backend:
+   `resume.pass_manager(optimization_level=1, basis_gates=[...])`.
+   The result can be used anywhere a pass manager is accepted, e.g. `QAOA(..., transpiler=pm)`.
+   Wrapped primitives also pass attribute access through (e.g. `sampler.options.default_shots = 2000`).
+   A pass manager built another way: `resume.wrap(pm, backend=backend)`. Remove imports that become unused.
+4. IBM device: replace `service.least_busy(...)` / `service.backend(name)` with `resume.backend(service)` /
+   `resume.backend(service, name="ibm_...")` inside the `with` block (records the device; reruns reuse it).
+   Keep extra least_busy filters as keyword arguments: `service.least_busy(operational=True,
+   simulator=False, min_num_qubits=5)` -> `resume.backend(service, min_num_qubits=5)` (operational and
+   non-simulator are the defaults). `service` may be omitted (default `QiskitRuntimeService()`).
+5. Unseeded randomness that feeds the computation must replay:
+   - `np.random.default_rng()` -> `resume.rng("<purpose>")`
+   - `np.random.rand(k)` -> `resume.rng("<purpose>").random(k)`; `np.random.uniform(a, b, k)` ->
+     `resume.rng("<purpose>").uniform(a, b, k)`; `random.random()` -> `resume.rng("<purpose>").random()`
+   - an int seed from a random source (`seed=random.randint(...)`, `seed_simulator=...`) or an int seed
+     argument you want fixed -> `resume.seed_for("<purpose>")`
+   `resume.rng("x")` always returns the same generator object for the same name, so it is safe to call it
+   inside loops: each draw continues the stream (like `random.random()`). Use one name per purpose.
+   Already-seeded generators (`default_rng(42)`) can stay. Simulator seeds matter only for calls that are
+   not yet recorded (recorded results are replayed as they were). The global `random` and `np.random`
+   states and `qiskit_algorithms.algorithm_globals` are seeded automatically, so library-internal
+   randomness (e.g. SPSA perturbations) needs nothing, and direct global calls also replay as long as
+   their order does not change; replacing them with named generators makes them order-independent
+   (recommended). `np.random.default_rng()` without a seed is NOT covered and must be replaced.
+   Code that calls `resume.rng`/`resume.seed_for` (e.g. `StatevectorSampler(seed=resume.seed_for("s"))`)
+   must run inside the `with` block.
+6. Verify (no QPU time, no account needed): `qresume selftest <script.py> -- <script arguments>`.
+   Expect `OK: safe to resume`. Otherwise it names the call and source line that would not replay;
+   the usual cause is unseeded randomness before that call (rule 5). Selftest uses synthetic results,
+   so its call counts can differ from a real run; that is expected.
+   A second normal run of a finished script ends with `run finished: replayed N, ..., executed 0 calls`.
+   Selftest runs the script several times (so it takes a few times the script's own classical run
+   time), uses temporary files only, and leaves no `.qresume` behind.
+7. Optional, for slow classical steps (they otherwise rerun on every replay, which is correct but slow):
+   decorate a deterministic, side-effect-free function with `@resume.wrap` and call it inside the `with`
+   block; its return value is recorded per arguments (numbers, strings, numpy arrays, lists/dicts,
+   SparsePauliOp, QuantumCircuit; call it the same way each time, `f(2)` and `f(n=2)` are different keys)
+   and reruns skip the work. Return values must be numbers, numpy arrays, lists/dicts of
+   them, `SparsePauliOp` or `QuantumCircuit` (anything else: `@resume.wrap(allow_pickle=True)`). At the end of
+   a run, sections that took longer than `slow_report_s` (default 10 s) between recorded calls are
+   reported as candidates. The run summary's call counts include these function calls.
+
+Optional settings of `resume_run`: `qpu_budget_s=120` (stop cleanly before exceeding), `log_calls=True`
+(one console line per call), `job_wait_timeout_s`, `on_divergence="stop"`, `on_backend_change="stop"`.
+
+## Minimal examples
+
+Local simulator (runs as is):
+
+```python
+import numpy as np
+from scipy.optimize import minimize
+from qiskit.circuit.library import real_amplitudes
+from qiskit.primitives import StatevectorEstimator
+from qiskit.quantum_info import SparsePauliOp
+import qiskit_resume as resume
+
+ansatz = real_amplitudes(2, reps=1)
+H = SparsePauliOp.from_list([("ZZ", 1.0), ("XI", 0.5), ("IX", 0.5)])
+
+with resume.resume_run("vqe_local.qresume"):
+    estimator = resume.wrap(StatevectorEstimator())
+    theta0 = resume.rng("init").uniform(-np.pi, np.pi, ansatz.num_parameters)
+    res = minimize(lambda x: float(estimator.run([(ansatz, H, x)]).result()[0].data.evs), theta0, method="COBYLA")
+    print(res.fun)
+```
+
+IBM hardware (needs a saved IBM Quantum account; `ansatz` and `H` as above):
+
+```python
+from qiskit_ibm_runtime import EstimatorV2
+
+with resume.resume_run("vqe.qresume", qpu_budget_s=120):
+    backend = resume.backend()
+    pm = resume.pass_manager(backend, optimization_level=1)
+    estimator = resume.wrap(EstimatorV2(mode=backend))
+    isa = pm.run(ansatz)
+    obs = H.apply_layout(isa.layout)
+    theta0 = resume.rng("init").uniform(-np.pi, np.pi, ansatz.num_parameters)
+    res = minimize(lambda x: float(estimator.run([(isa, obs, x)]).result()[0].data.evs), theta0, method="COBYLA")
+```
+
+## Do not
+
+- Do not create Estimators/Samplers inside code that never sees the wrapped object (wrap them where created).
+- Do not call `backend.run(...)` or simulate with `Statevector` directly for results that must resume:
+  only primitive calls are recorded.
+- Do not change the script between an interrupted run and its rerun unless you mean to (changes are
+  detected and reported; later calls then run for real).
+
+## Docs
+
+- [README](https://github.com/set3523/Qiskit-resume/blob/master/README.md): overview, API table, hardware test results
+- [Examples](https://github.com/set3523/Qiskit-resume/tree/master/examples): plain Qiskit workloads and a kill-and-resume runner
+- [Contracts](https://github.com/set3523/Qiskit-resume/blob/master/docs/CONTRACTS.md): every public function's inputs, outputs and errors

@@ -1,0 +1,19 @@
+# private notes (not published)
+README_ko.md
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+*.qresume
+*.qresume-journal
+*.qresume-wal
+*.qresume-shm
+*.qresume.lock
+
+# run logs (e.g. examples/ibm_test2.log)
+*.log

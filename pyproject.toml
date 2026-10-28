@@ -1,0 +1,48 @@
+[project]
+name = "qiskit-resume"
+dynamic = ["version"]
+description = "Record & replay layer that lets any Qiskit Primitives workflow resume after interruption without re-spending QPU time."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "set3523", email = "set35230@gmail.com" }]
+keywords = ["qiskit", "quantum", "checkpoint", "resume", "ibm-quantum", "vqe", "qaoa"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+    "qiskit>=1.4",
+    "numpy>=1.23",
+]
+
+[project.urls]
+Homepage = "https://github.com/set3523/Qiskit-resume"
+Issues = "https://github.com/set3523/Qiskit-resume/issues"
+
+[project.optional-dependencies]
+ibm = ["qiskit-ibm-runtime>=0.30"]
+examples = ["qiskit-algorithms>=0.3"]
+dev = ["pytest>=7.0", "scipy"]
+
+[project.scripts]
+qresume = "qiskit_resume.tools.cli:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = { attr = "qiskit_resume._version.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["qiskit_resume*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
